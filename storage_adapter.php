@@ -164,24 +164,39 @@ function deleteFile($object_id, $user_id = null) {
     }
     
     try {
+        // 1. Log the delete action BEFORE deleting the object
+        logAudit($object_id, 'DELETE', $user_id, $_SERVER['REMOTE_ADDR'] ?? '', "File deletion initiated for: " . $object['file_key']);
+        
+        // 2. Delete the physical file from storage
         if ($object['storage_type'] === 'local' && file_exists($object['file_path'])) {
             unlink($object['file_path']);
         }
         
-        // Delete from database
+        // 3. Delete from the database. ON DELETE CASCADE will handle audit_logs.
         $delete_stmt = $conn->prepare("DELETE FROM objects WHERE id = ?");
         $delete_stmt->bind_param("i", $object_id);
         $delete_stmt->execute();
         $delete_stmt->close();
-        
-        // Log audit
-        logAudit($object_id, 'DELETE', $user_id, $_SERVER['REMOTE_ADDR'] ?? '', "File deleted");
         
         return ['success' => true];
     } catch (Exception $e) {
         return ['success' => false, 'error' => $e->getMessage()];
     }
 }
+
+function deleteObject(string $bucket, string $key, int $user_id = null): array {
+    // Get the object ID based on bucket and key
+    $object_id = getObjectId($bucket, $key);
+
+    if (!$object_id) {
+        return ['success' => false, 'error' => 'Object not found'];
+    }
+
+    // Call the existing deleteFile function with the object ID
+    return deleteFile($object_id, $user_id);
+}
+
+
 
 /**
  * Get file metadata
@@ -197,5 +212,21 @@ function getFileMetadata($object_id) {
     $stmt->close();
     
     return $metadata;
+}
+
+/**
+ * Helper function to get object ID by bucket and key
+ */
+function getObjectId(string $bucket, string $key): ?int {
+    global $conn;
+    $bucket_id = getBucketId($bucket);
+    $stmt = $conn->prepare("SELECT id FROM objects WHERE bucket_id = ? AND file_key = ?");
+    $stmt->bind_param("is", $bucket_id, $key);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $object = $result->fetch_assoc();
+    $stmt->close();
+
+    return $object ? (int)$object['id'] : null;
 }
 ?>

@@ -90,3 +90,477 @@ function updateScanStatus($object_id, $is_scanned, $scan_results = '') {
     $stmt->close();
 }
 ?>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<?php
+session_start();
+require_once 'storage_adapter.php';
+
+// Check authentication
+if (!isset($_SESSION["user_id"])) {
+    header("Location: login.php");
+    exit();
+}
+
+$current_page = basename($_SERVER['PHP_SELF']);
+
+$upload_message = '';
+$upload_error = '';
+
+// Handle file deletion
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_object']) && isset($_POST['object_key'])) {
+    $bucket = $_POST['bucket'] ?? '';
+    $object_key = $_POST['object_key'];
+
+    if (!empty($bucket) && !empty($object_key)) {
+        $delete_result = deleteObject($bucket, $object_key, $_SESSION['user_id']);
+
+        // For AJAX requests, send a JSON response and exit.
+        header('Content-Type: application/json');
+        if ($delete_result['success']) {
+            echo json_encode(['success' => true, 'message' => 'File deleted successfully.']);
+        } else {
+            http_response_code(500); // Set an error status code for failed deletions
+            echo json_encode(['success' => false, 'message' => $delete_result['error'] ?? 'Unknown error on server']);
+        }
+        exit(); // IMPORTANT: Stop the script from rendering the full HTML page
+    }
+}
+
+
+// Handle file upload
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['fileToUpload'])) {
+    $bucket = $_POST['bucket'] ?? '';
+    
+    if (empty($bucket)) {
+        $upload_error = 'Please select a bucket.';
+    } elseif ($_FILES['fileToUpload']['error'] != UPLOAD_ERR_OK) {
+        $upload_error = 'File upload error: ' . $_FILES['fileToUpload']['error'];
+    } else {
+        $key = basename($_FILES["fileToUpload"]["name"]);
+        $path = $_FILES['fileToUpload']['tmp_name'];
+        
+        $result = uploadFile($bucket, $key, $path, $_SESSION['user_id']);
+        
+        if ($result['success']) {
+            $upload_message = 'File uploaded successfully! Object ID: ' . $result['object_id'];
+        } else {
+            $upload_error = 'Upload failed: ' . ($result['error'] ?? 'Unknown error');
+        }
+    }
+}
+
+$buckets = listBuckets();
+$selected_bucket = $_GET['bucket'] ?? '';
+$objects = $selected_bucket ? listObjects($selected_bucket) : [];
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>DLP - File Scanning</title>
+
+<style>
+    body { 
+        margin:0; 
+        font-family:Poppins,sans-serif; 
+        background:#f5f6fa; 
+        display:flex; 
+    }
+
+    .sidebar { 
+        width:280px; 
+        background:#7a0010; 
+        color:white; 
+        height:100vh; 
+        position:fixed; 
+        padding-top:20px; 
+        overflow-y: auto;
+    }
+    
+    .sidebar h2 {
+        text-align: center;
+        margin: 0 0 20px 0;
+        font-size: 16px;
+    }
+    
+    .sidebar ul { 
+        list-style: none; 
+        margin: 0; 
+        padding: 0; 
+    }
+    
+    .sidebar ul li { 
+        padding:14px 20px; 
+        cursor:pointer; 
+        border-bottom:1px solid rgba(255,255,255,0.1); 
+    }
+    .sidebar ul li:hover { 
+        background:#5b000b; 
+    }
+    
+    .sidebar ul li.active {
+        background: #5b000b;
+        border-left: 4px solid #fff;
+        padding-left: 16px;
+    }
+
+    .sidebar a {
+        color: white;
+        text-decoration: none;
+    }
+
+    .main { 
+        margin-left:280px; 
+        padding:20px; 
+        width:calc(100% - 280px); 
+    }
+
+    .upload-box {
+        background:white; 
+        padding:20px;
+        border-radius:10px; 
+        box-shadow:0 2px 6px rgba(0,0,0,0.1);
+        text-align:center;
+        margin-bottom: 20px;
+    }
+
+    .message {
+        padding: 12px;
+        border-radius: 8px;
+        margin-bottom: 15px;
+        display: none; /* Hidden by default */
+        opacity: 0;
+        transition: opacity 0.5s ease-in-out;
+    }
+
+    .success {
+        background: #d4edda;
+        color: #155724;
+    }
+
+    .error-box {
+        background: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+    }
+
+    input[type=file] {
+        margin:20px 0;
+    }
+
+    select, input {
+        padding: 8px;
+        margin: 5px;
+        border-radius: 4px;
+        border: 1px solid #ddd;
+    }
+
+    button {
+        padding:10px 20px; 
+        background:#7a0010; 
+        color:white; 
+        border:none; 
+        border-radius:6px;
+        cursor: pointer;
+    }
+
+    button:hover {
+        background: #5b000b;
+    }
+
+    .bucket-list, .object-list {
+        background:white; 
+        padding:20px;
+        border-radius:10px; 
+        box-shadow:0 2px 6px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+
+    .list-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .bucket-list ul, .object-list ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+
+    .bucket-list li, .object-list li {
+        padding: 12px;
+        border-bottom: 1px solid #eee;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: background-color 0.2s;
+    }
+
+    .bucket-list li:last-child, .object-list li:last-child {
+        border-bottom: none;
+    }
+
+    .bucket-list a {
+        color: #7a0010;
+        text-decoration: none;
+    }
+
+    .bucket-list a:hover {
+        text-decoration: underline;
+    }
+
+    .object-details {
+        flex-grow: 1;
+    }
+
+    .object-info {
+        font-size: 12px;
+        color: #666;
+        margin-top: 4px;
+    }
+
+    .delete-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #e74c3c;
+        font-size: 18px;
+        padding: 5px;
+    }
+    .delete-btn:hover {
+        color: #c0392b;
+    }
+
+</style>
+
+</head>
+<body>
+
+<?php include 'sidebar.php'; ?>
+
+<div class="main">
+    <h2>File Scanning</h2>
+
+    <!-- Message containers for JS -->
+    <div id="successMessage" class="message success"></div>
+    <div id="errorMessage" class="message error-box"></div>
+
+    <div class="upload-box">
+        <h3>Upload a file to scan</h3>
+        <form id="uploadForm" action="scan.php" method="post" enctype="multipart/form-data">
+            <select name="bucket" required>
+                <option value="">-- Select Bucket --</option>
+                <?php foreach ($buckets as $bucket): ?>
+                    <option value="<?php echo htmlspecialchars($bucket['name']); ?>">
+                        <?php echo htmlspecialchars($bucket['name']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <input type="file" name="fileToUpload" id="fileToUpload" required>
+            <br>
+            <button type="submit">Upload and Scan</button>
+        </form>
+        <div id="progress-container" style="display:none; margin-top: 15px; background-color: #f0f0f0; border-radius: 5px; padding: 3px;">
+            <div id="progress-bar" style="width: 0%; height: 24px; background-color: #7a0010; border-radius: 4px; text-align: center; color: white; line-height: 24px;">
+                <span id="progress-text">0%</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="bucket-list">
+        <h3>Buckets</h3>
+        <ul>
+            <?php if (!empty($buckets)): ?>
+                <?php foreach ($buckets as $bucket): ?>
+                    <li>
+                        <a href="?bucket=<?php echo urlencode($bucket['name']); ?>">
+                            📁 <?php echo htmlspecialchars($bucket['name']); ?>
+                        </a>
+                    </li>
+                <?php endforeach; ?>
+            <?php else: ?>
+                <li style="color: #999;">No buckets available. Create one in settings.</li>
+            <?php endif; ?>
+        </ul>
+    </div>
+
+    <div class="object-list">
+        <div class="list-header">
+            <h3>Objects in <?php echo htmlspecialchars($selected_bucket ?: '...'); ?></h3>
+        </div>
+        <ul id="object-list-ul">
+            <?php if (!empty($selected_bucket)): ?>
+                <?php if (!empty($objects)): ?>
+                    <?php foreach ($objects as $object): ?>
+                        <li data-key="<?php echo htmlspecialchars($object['key']); ?>">
+                            <div class="object-details">
+                                📄 <?php echo htmlspecialchars($object['key']); ?>
+                                <div class="object-info">
+                                    Size: <?php echo number_format($object['file_size'] / 1024, 2); ?> KB | 
+                                    Type: <?php echo htmlspecialchars($object['mime_type']); ?> |
+                                    Uploaded: <?php echo date('Y-m-d H:i', strtotime($object['uploaded_at'])); ?> |
+                                    Scanned: <?php echo $object['is_scanned'] ? 'Yes ✓' : 'No'; ?>
+                                </div>
+                            </div>
+                            <button class="delete-btn" title="Delete file" onclick="deleteObject(this, '<?php echo htmlspecialchars($selected_bucket); ?>', '<?php echo htmlspecialchars($object['key']); ?>')">
+                                &#10005;
+                            </button>
+                        </li>
+                    <?php endforeach; ?>
+                <?php else: ?>
+                    <p>No files in this bucket.</p>
+                <?php endif; ?>
+            <?php endif; ?>
+        </ul>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('uploadForm');
+    const progressBarContainer = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress-bar');
+    const progressText = document.getElementById('progress-text');
+    const fileInput = document.getElementById('fileToUpload');
+
+    // Display initial messages if any (from non-JS operations)
+    <?php if (!empty($upload_message)): ?>
+        showFlashMessage('<?php echo addslashes($upload_message); ?>', 'success');
+    <?php endif; ?>
+    <?php if (!empty($upload_error)): ?>
+        showFlashMessage('<?php echo addslashes($upload_error); ?>', 'error');
+    <?php endif; ?>
+
+    // Handle AJAX form submission for uploads
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+
+        if (fileInput.files.length === 0) {
+            // The 'required' attribute on the input should prevent this, but it's good practice.
+            alert('Please select a file to upload.');
+            return;
+        }
+
+        const formData = new FormData(form);
+        const xhr = new XMLHttpRequest();
+
+        xhr.open('POST', form.action, true);
+
+        // Show the progress bar
+        progressBar.style.width = '0%';
+        progressText.textContent = '0%';
+        progressBarContainer.style.display = 'block';
+
+        xhr.upload.addEventListener('progress', function(event) {
+            if (event.lengthComputable) {
+                const percentComplete = Math.round((event.loaded / event.total) * 100);
+                progressBar.style.width = percentComplete + '%';
+                progressText.textContent = percentComplete + '%';
+                // Don't let it sit at 100% until the server is truly done.
+                const displayPercent = Math.min(percentComplete, 99);
+                progressBar.style.width = displayPercent + '%';
+                progressText.textContent = displayPercent + '%';
+            }
+        });
+
+        xhr.addEventListener('load', function() {
+            // On successful upload, simply reload the page.
+            // This is the simplest way to see the new file and any server messages.
+            // This event fires when the server has responded.
+            progressBar.style.width = '100%';
+            progressText.textContent = 'Processing...';
+
+            if (xhr.status >= 200 && xhr.status < 300) {
+                window.location.reload();
+                // Give a brief moment for the user to see "Processing" before reload.
+                setTimeout(() => {
+                    window.location.reload();
+                }, 500);
+            } else {
+                showFlashMessage('An error occurred during the upload. Please try again.', 'error');
+                progressBarContainer.style.display = 'none';
+            }
+        });
+
+        xhr.send(formData);
+    });
+});
+
+// Function to show a temporary message
+function showFlashMessage(message, type) {
+    const successBox = document.getElementById('successMessage');
+    const errorBox = document.getElementById('errorMessage');
+    const box = type === 'success' ? successBox : errorBox;
+
+    box.textContent = message;
+    box.style.display = 'block';
+    setTimeout(() => { box.style.opacity = 1; }, 10); // Fade in
+
+    setTimeout(() => {
+        box.style.opacity = 0;
+        setTimeout(() => { box.style.display = 'none'; }, 500); // Fade out
+    }, 5000);
+}
+
+// Function to handle object deletion via AJAX
+function deleteObject(element, bucket, key) {
+    if (!confirm(`Are you sure you want to delete ${key}?`)) {
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('delete_object', '1');
+    formData.append('bucket', bucket);
+    formData.append('object_key', key);
+
+    fetch('scan.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => {
+        // We expect JSON now, so we parse it.
+        return response.json().then(data => ({ ok: response.ok, data }));
+    })
+    .then(({ ok, data }) => {
+        if (ok && data.success) {
+            const listItem = element.closest('li');
+            listItem.style.transition = 'opacity 0.5s, transform 0.5s';
+            listItem.style.opacity = 0;
+            listItem.style.transform = 'translateX(-20px)';
+            setTimeout(() => listItem.remove(), 500);
+            showFlashMessage(`Successfully deleted ${key}.`, 'success');
+        } else {
+            // Show the specific error message from the server
+            showFlashMessage(`Deletion failed: ${data.message}`, 'error');
+        }
+    }).catch(error => showFlashMessage('A network error occurred during deletion.', 'error'));
+}
+</script>
+</body>
+</html>
